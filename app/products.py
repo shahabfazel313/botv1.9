@@ -23,6 +23,12 @@ def _normalize_item(raw: dict) -> dict:
     item["pre_available"] = bool(item.get("pre_available"))
     item["require_username"] = bool(item.get("require_username"))
     item["require_password"] = bool(item.get("require_password"))
+    
+    # --- تغییرات جدید: خواندن تنظیمات اختصاصی اکانت شخصی ---
+    item["self_require_username"] = bool(item.get("self_require_username"))
+    item["self_require_password"] = bool(item.get("self_require_password"))
+    # -------------------------------------------------------
+
     item["allow_first_plan"] = bool(item.get("allow_first_plan"))
     item["cashback_enabled"] = bool(item.get("cashback_enabled"))
     item["price"] = int(item.get("price") or 0)
