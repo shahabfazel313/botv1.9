@@ -1957,3 +1957,11 @@ def remove_order_discount(order_id: int) -> bool:
         (datetime.now().isoformat(timespec="seconds"), order_id)
     )
     return True
+
+# در فایل app/db.py اضافه شود
+
+def delete_service_message(message_id: int) -> None:
+    # حذف پیام اصلی
+    db_execute("DELETE FROM service_messages WHERE id=?", (message_id,))
+    # حذف پاسخ‌های مرتبط با آن پیام (برای تمیز ماندن دیتابیس)
+    db_execute("DELETE FROM service_message_replies WHERE service_message_id=?", (message_id,))
