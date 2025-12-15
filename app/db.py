@@ -155,6 +155,10 @@ def _add_missing_columns(con, cur) -> None:
         ("products", "account_enabled", "INTEGER DEFAULT 0"),
         ("products", "self_available", "INTEGER DEFAULT 0"),
         ("products", "self_price", "INTEGER DEFAULT 0"),
+        # ستون‌های جدید برای نیازهای خاص مود "اکانت خودم"
+        ("products", "self_require_username", "INTEGER DEFAULT 0"),
+        ("products", "self_require_password", "INTEGER DEFAULT 0"),
+        
         ("products", "pre_available", "INTEGER DEFAULT 0"),
         ("products", "pre_price", "INTEGER DEFAULT 0"),
         ("products", "require_username", "INTEGER DEFAULT 0"),
@@ -244,6 +248,8 @@ def init_db():
                 account_enabled INTEGER DEFAULT 0,
                 self_available INTEGER DEFAULT 0,
                 self_price INTEGER DEFAULT 0,
+                self_require_username INTEGER DEFAULT 0,
+                self_require_password INTEGER DEFAULT 0,
                 pre_available INTEGER DEFAULT 0,
                 pre_price INTEGER DEFAULT 0,
                 require_username INTEGER DEFAULT 0,
@@ -531,7 +537,7 @@ def set_order_status(order_id: int, status: str):
         updated
         and previous
         and previous.get("status") != updated.get("status")
-        and updated.get("status") in paid_statuses
+        and updated.get("status") in cashback_statuses
     ):
         apply_order_cashback(order_id)
 
@@ -1166,19 +1172,15 @@ def _repair_discount_table(con, cur) -> None:
         cur.execute("PRAGMA table_info(discount_redemptions)")
         columns = {row["name"] for row in cur.fetchall()}
         
-        # 1. order_id
         if "order_id" not in columns:
             cur.execute("ALTER TABLE discount_redemptions ADD COLUMN order_id INTEGER")
         
-        # 2. times_used
         if "times_used" not in columns:
             cur.execute("ALTER TABLE discount_redemptions ADD COLUMN times_used INTEGER DEFAULT 1")
         
-        # 3. redeemed_at
         if "redeemed_at" not in columns:
             cur.execute("ALTER TABLE discount_redemptions ADD COLUMN redeemed_at TEXT")
             
-        # 4. status
         if "status" not in columns:
             cur.execute("ALTER TABLE discount_redemptions ADD COLUMN status TEXT DEFAULT 'CONFIRMED'")
             
@@ -1190,14 +1192,12 @@ def _repair_discount_table(con, cur) -> None:
 def apply_discount_to_order(
     order_id: int, user_id: int, code: str
 ) -> tuple[bool, dict[str, Any] | None, str | None]:
-    # 0. تعمیر خودکار ساختار جدول (قبل از هر کاری)
     try:
         with closing(_connect()) as con:
             _repair_discount_table(con, con.cursor())
     except Exception:
         pass
 
-    # 1. دریافت سفارش
     order = get_order(order_id)
     if not order or order.get("user_id") != user_id:
         return False, None, "سفارش نامعتبر است."
@@ -1206,7 +1206,6 @@ def apply_discount_to_order(
     if (order.get("discount_code") or "").strip():
         return False, None, "روی این سفارش قبلاً کد تخفیف ثبت شده است."
 
-    # 2. بررسی کد تخفیف
     normalized = (code or "").strip().upper()
     if not normalized:
         return False, None, "کد تخفیف نامعتبر است."
@@ -1237,7 +1236,6 @@ def apply_discount_to_order(
         except ValueError:
             pass
 
-    # 3. بررسی محصول مجاز
     product_id = _order_product_id(order)
     allowed_products = discount.get("product_ids") or []
     if isinstance(allowed_products, str):
@@ -1247,7 +1245,6 @@ def apply_discount_to_order(
         if product_id not in allowed_products:
             return False, None, "این کد برای محصول انتخاب‌شده معتبر نیست."
 
-    # 4. بررسی سابقه استفاده کاربر
     redemption = db_execute(
         "SELECT id, times_used FROM discount_redemptions WHERE discount_id=? AND user_id=?",
         (discount["id"], user_id),
@@ -1258,14 +1255,12 @@ def apply_discount_to_order(
     if per_user_limit and existing_uses >= per_user_limit:
         return False, None, "سقف استفاده شما از این کد تکمیل شده است."
 
-    # 5. محاسبه مبلغ
     base_amount = int(order.get("amount_total") or order.get("price") or 0)
     discount_value = min(max(amount, 0), max(base_amount, 0))
     payable = max(base_amount - discount_value, 0)
 
     now = datetime.now().isoformat(timespec="seconds")
 
-    # 6. ثبت در دیتابیس
     db_execute(
         """
         UPDATE orders
@@ -1308,7 +1303,6 @@ def apply_discount_to_order(
 def get_user_stats(user_id: int):
     u = db_execute("SELECT * FROM users WHERE user_id=?", (user_id,), fetchone=True) or {}
     total = db_execute("SELECT COUNT(*) AS c FROM orders WHERE user_id=?", (user_id,), fetchone=True)["c"]
-    # در حال انجام: پس از تایید پرداخت تا قبل از تحویل
     inprog = db_execute("""
         SELECT COUNT(*) AS c FROM orders
         WHERE user_id=? AND status IN ('PENDING_CONFIRM','PENDING_PLAN','APPROVED','IN_PROGRESS','READY_TO_DELIVER')
@@ -1336,7 +1330,7 @@ def list_orders_by_category(user_id: int, category: str, limit: int = 10, offset
     elif category == "all":
         where += " AND 1=1"
     else:
-        where += " AND 1=0"  # ناشناخته
+        where += " AND 1=0"
 
     sql = f"SELECT * FROM orders WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
@@ -1357,9 +1351,7 @@ def count_orders_by_category(user_id: int, category: str):
     r = db_execute(sql, tuple(params), fetchone=True)
     return int(r["c"] if r else 0)
 
-# ===== User phone verification (auto-migrate columns if missing) =====
 def set_user_phone_verified(user_id: int, phone: str):
-    # add columns if not exists (SQLite trick: try/except)
     try:
         db_execute("ALTER TABLE users ADD COLUMN phone TEXT", (), commit=True)
     except Exception:
@@ -1372,7 +1364,7 @@ def set_user_phone_verified(user_id: int, phone: str):
     return True
 
 
-# ===== Admin web helpers =====
+# ====== Admin web helpers =====
 
 ORDER_STATUS_LABELS: dict[str, str] = {
     "AWAITING_PAYMENT": "در انتظار پرداخت",
@@ -1799,6 +1791,8 @@ def create_product(
     account_enabled: bool = False,
     self_available: bool = False,
     self_price: int = 0,
+    self_require_username: bool = False,
+    self_require_password: bool = False,
     pre_available: bool = False,
     pre_price: int = 0,
     require_username: bool = False,
@@ -1813,11 +1807,12 @@ def create_product(
         """
         INSERT INTO products(
             parent_id, title, description, price, available, is_category, request_only, account_enabled,
-            self_available, self_price, pre_available, pre_price, require_username, require_password,
+            self_available, self_price, self_require_username, self_require_password,
+            pre_available, pre_price, require_username, require_password,
             allow_first_plan, cashback_enabled, cashback_percent,
             sort_order, created_at, updated_at
         )
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             parent_id,
@@ -1830,6 +1825,8 @@ def create_product(
             1 if account_enabled else 0,
             1 if self_available else 0,
             max(int(self_price), 0),
+            1 if self_require_username else 0,
+            1 if self_require_password else 0,
             1 if pre_available else 0,
             max(int(pre_price), 0),
             1 if require_username else 0,
@@ -1858,6 +1855,8 @@ def update_product(
     account_enabled: bool | None = None,
     self_available: bool | None = None,
     self_price: int | None = None,
+    self_require_username: bool | None = None,
+    self_require_password: bool | None = None,
     pre_available: bool | None = None,
     pre_price: int | None = None,
     require_username: bool | None = None,
@@ -1880,6 +1879,10 @@ def update_product(
         "account_enabled": 1 if (account_enabled if account_enabled is not None else current.get("account_enabled")) else 0,
         "self_available": 1 if (self_available if self_available is not None else current.get("self_available")) else 0,
         "self_price": max(int(self_price), 0) if self_price is not None else int(current.get("self_price") or 0),
+        
+        "self_require_username": 1 if (self_require_username if self_require_username is not None else current.get("self_require_username")) else 0,
+        "self_require_password": 1 if (self_require_password if self_require_password is not None else current.get("self_require_password")) else 0,
+        
         "pre_available": 1 if (pre_available if pre_available is not None else current.get("pre_available")) else 0,
         "pre_price": max(int(pre_price), 0) if pre_price is not None else int(current.get("pre_price") or 0),
         "require_username": 1 if (require_username if require_username is not None else current.get("require_username")) else 0,
@@ -1896,7 +1899,8 @@ def update_product(
         """
         UPDATE products
         SET title=?, description=?, price=?, available=?, is_category=?, request_only=?, account_enabled=?,
-            self_available=?, self_price=?, pre_available=?, pre_price=?, require_username=?, require_password=?,
+            self_available=?, self_price=?, self_require_username=?, self_require_password=?, 
+            pre_available=?, pre_price=?, require_username=?, require_password=?,
             allow_first_plan=?, cashback_enabled=?, cashback_percent=?,
             sort_order=?, parent_id=?, updated_at=?
         WHERE id=?
@@ -1911,6 +1915,8 @@ def update_product(
             fields["account_enabled"],
             fields["self_available"],
             fields["self_price"],
+            fields["self_require_username"],
+            fields["self_require_password"],
             fields["pre_available"],
             fields["pre_price"],
             fields["require_username"],
