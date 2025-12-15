@@ -167,10 +167,12 @@ def _render(request: Request, template_name: str, context: dict[str, Any] | None
 
 
 async def _notify_user(user_id: int, text: str) -> None:
+    if not user_id:
+        return
     try:
         await bot.send_message(user_id, text)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error sending message to user {user_id}: {e}")
 
 
 async def _telegram_file_response(file_id: str) -> StreamingResponse:
@@ -445,6 +447,11 @@ def create_admin_app() -> FastAPI:
             pre_available = False
             self_price = 0
             pre_price = 0
+            require_username = False
+            require_password = False
+            allow_first_plan = False
+            cashback_enabled = False
+            cashback_percent = 0
         elif parent_id:
             parent = get_product(parent_id)
             if not parent or not parent.get("is_category"):
@@ -861,7 +868,7 @@ def create_admin_app() -> FastAPI:
         if user_id:
             category_label = SERVICE_MESSAGE_LABELS.get(message.get("category"), message.get("category"))
             await _notify_user(
-                user_id,
+                int(user_id),
                 f"📨 پاسخ مدیریت درباره درخواست «{category_label}»:\n\n{text}",
             )
         _flash(request, "پاسخ برای مشتری ارسال شد.")
@@ -954,7 +961,7 @@ def create_admin_app() -> FastAPI:
                 if cashback_delta > 0:
                     product_title = updated.get("plan_title") or updated.get("service_code") or order_title
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         (
                             f"🎁 مبلغ {_format_amount(cashback_delta)} {CURRENCY} بابت سفارش «{product_title}» به کیف پول شما اضافه شد.\n\n"
                             "منتظر خریدهای بعدی‌تان هستیم! 🌹"
@@ -964,7 +971,7 @@ def create_admin_app() -> FastAPI:
                 if plan_approval:
                     product_title = updated.get("plan_title") or updated.get("service_code") or order_title
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         (
                             f"✅ طرح خرید اول سفارش شما تایید شد و در حال انجام می‌باشد.\n"
                             f"سفارش #{order_id} - {product_title}"
@@ -1006,7 +1013,7 @@ def create_admin_app() -> FastAPI:
                         )
                         refund_total += card_part
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         (
                             f"❌ سفارش «{order_title}» (#{order_id}) رد شد و مبلغ {refund_total} تومان به کیف پول شما واریز شد.\n"
                             "لطفاً در صورت نیاز با پشتیبانی تماس بگیرید."
@@ -1014,7 +1021,7 @@ def create_admin_app() -> FastAPI:
                     )
                 elif new_status == "IN_PROGRESS":
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         f"✅ پرداخت سفارش «{order_title}» (#{order_id}) تایید شد و در حال انجام است.",
                     )
                 elif new_status == "COMPLETED":
@@ -1022,11 +1029,11 @@ def create_admin_app() -> FastAPI:
                     message = f"🎉 سفارش «{order_title}» (#{order_id}) تکمیل شد."
                     if manager_note_text:
                         message += f"\n\nپیام مدیر:\n{manager_note_text}"
-                    await _notify_user(user_id, message)
+                    await _notify_user(int(user_id), message)
                 else:
                     label = ORDER_STATUS_LABELS.get(new_status, new_status)
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         f"📦 وضعیت سفارش «{order_title}» (#{order_id}) به «{label}» تغییر کرد.",
                     )
 
@@ -1049,7 +1056,7 @@ def create_admin_app() -> FastAPI:
                 if user_id:
                     product_title = updated.get("plan_title") or updated.get("service_code") or order_title
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         (
                             f"✅ طرح خرید اول سفارش شما تایید شد و در حال انجام می‌باشد.\n"
                             f"سفارش #{order_id} - {product_title}"
@@ -1066,7 +1073,7 @@ def create_admin_app() -> FastAPI:
                 add_order_manager_message(order_id, user_id, text)
                 if user_id:
                     await _notify_user(
-                        user_id,
+                        int(user_id),
                         f"📬 پیام جدید درباره سفارش «{order_title}» (#{order_id}):\n\n{text}",
                     )
                 _flash(request, "پیام مدیر برای مشتری ارسال شد.")
@@ -1187,7 +1194,7 @@ def create_admin_app() -> FastAPI:
             balance = int(new_profile.get("wallet_balance") if new_profile else 0)
             sign = "+" if delta > 0 else "-"
             await _notify_user(
-                user_id,
+                int(user_id),
                 (
                     f"📢 موجودی کیف پول شما {sign}{abs(delta)} تومان تغییر کرد.\n"
                     f"موجودی فعلی: {balance} تومان."
@@ -1211,7 +1218,7 @@ def create_admin_app() -> FastAPI:
             return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
 
         add_user_manager_message(user_id, text)
-        await _notify_user(user_id, f"📬 پیام مدیر\n\n{text}")
+        await _notify_user(int(user_id), f"📬 پیام مدیر\n\n{text}")
         _flash(request, "پیام برای کاربر ارسال شد.")
         return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
 
@@ -1228,11 +1235,11 @@ def create_admin_app() -> FastAPI:
         if action == "block":
             set_user_blocked(user_id, True)
             _flash(request, "کاربر مسدود شد.")
-            await _notify_user(user_id, "⛔️ دسترسی شما به خدمات ربات توسط مدیریت مسدود شد.")
+            await _notify_user(int(user_id), "⛔️ دسترسی شما به خدمات ربات توسط مدیریت مسدود شد.")
         elif action == "unblock":
             set_user_blocked(user_id, False)
             _flash(request, "کاربر از حالت مسدود خارج شد.")
-            await _notify_user(user_id, "✅ دسترسی شما به خدمات ربات دوباره فعال شد.")
+            await _notify_user(int(user_id), "✅ دسترسی شما به خدمات ربات دوباره فعال شد.")
         else:
             _flash(request, "درخواست نامعتبر بود.", "error")
         return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
