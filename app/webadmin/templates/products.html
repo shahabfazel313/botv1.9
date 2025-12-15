@@ -76,10 +76,24 @@
                 <input type="checkbox" name="account_enabled" id="account-enabled">
                 حالت اکانت فعال باشد
             </label>
-            <label class="checkbox">
-                <input type="checkbox" name="self_available" data-account-toggle="new" id="self-available">
-                روی اکانت خودم فعال باشد
-            </label>
+            
+            <div class="stack">
+                <label class="checkbox">
+                    <input type="checkbox" name="self_available" data-account-toggle="new" id="self-available">
+                    روی اکانت خودم فعال باشد
+                </label>
+                <div class="indent-box hidden" id="self-credentials-box-new">
+                    <label class="checkbox">
+                        <input type="checkbox" name="self_require_username">
+                        گرفتن یوزر/ایمیل (حالت اکانت خودم)
+                    </label>
+                    <label class="checkbox">
+                        <input type="checkbox" name="self_require_password">
+                        گرفتن پسورد (حالت اکانت خودم)
+                    </label>
+                </div>
+            </div>
+
             <label>
                 قیمت روی اکانت خودم
                 <input type="number" name="self_price" value="0" min="0" step="1000">
@@ -96,13 +110,13 @@
         <div class="inline-fields span credentials-box" data-credentials-for="new">
             <label class="checkbox">
                 <input type="checkbox" name="require_username" id="require-username">
-                گرفتن یوزر/ایمیل
+                گرفتن یوزر/ایمیل (عمومی)
             </label>
             <label class="checkbox">
                 <input type="checkbox" name="require_password" id="require-password">
-                گرفتن پسورد
+                گرفتن پسورد (عمومی)
             </label>
-            <span class="hint-inline">در صورت فعال بودن (به جز حالت «فقط ثبت درخواست») از مشتری پرسیده می‌شوند.</span>
+            <span class="hint-inline">در صورت فعال بودن (به جز حالت اکانت خودم)، از مشتری پرسیده می‌شوند.</span>
         </div>
         <div class="inline-fields">
             <label class="checkbox">
@@ -190,10 +204,22 @@
                                 </label>
                             </div>
                             <div class="inline-fields account-block" data-account-row="{{ item.id }}">
-                                <label class="checkbox">
-                                    <input type="checkbox" name="self_available-{{ item.id }}" {% if item.self_available %}checked{% endif %} data-account-toggle="{{ item.id }}">
-                                    روی اکانت خودم
-                                </label>
+                                <div class="stack">
+                                    <label class="checkbox">
+                                        <input type="checkbox" name="self_available-{{ item.id }}" {% if item.self_available %}checked{% endif %} data-account-toggle="{{ item.id }}">
+                                        روی اکانت خودم
+                                    </label>
+                                    <div class="indent-box hidden" id="self-credentials-box-{{ item.id }}">
+                                        <label class="checkbox">
+                                            <input type="checkbox" name="self_require_username-{{ item.id }}" {% if item.self_require_username %}checked{% endif %}>
+                                            گرفتن یوزر
+                                        </label>
+                                        <label class="checkbox">
+                                            <input type="checkbox" name="self_require_password-{{ item.id }}" {% if item.self_require_password %}checked{% endif %}>
+                                            گرفتن پسورد
+                                        </label>
+                                    </div>
+                                </div>
                                 <label>
                                     قیمت خودم
                                     <input type="number" name="self_price-{{ item.id }}" value="{{ item.self_price }}" min="0" step="1000">
@@ -210,13 +236,12 @@
                             <div class="inline-fields credentials-box" data-credentials-for="{{ item.id }}">
                                 <label class="checkbox">
                                     <input type="checkbox" name="require_username-{{ item.id }}" {% if item.require_username %}checked{% endif %}>
-                                    گرفتن یوزر/ایمیل
+                                    گرفتن یوزر/ایمیل (عمومی)
                                 </label>
                                 <label class="checkbox">
                                     <input type="checkbox" name="require_password-{{ item.id }}" {% if item.require_password %}checked{% endif %}>
-                                    گرفتن پسورد
+                                    گرفتن پسورد (عمومی)
                                 </label>
-                                <span class="hint-inline">هنگام خرید در بات نمایش داده می‌شود.</span>
                             </div>
                             <div class="inline-fields">
                                 <label class="checkbox">
@@ -264,7 +289,51 @@
         </div>
     </form>
 </section>
+<style>
+    .indent-box {
+        margin-right: 20px;
+        border-right: 2px solid var(--border);
+        padding-right: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+    }
+</style>
 <script>
+    const updateSelfCredentialsState = (rowId, selfChecked) => {
+        const globalUser = document.querySelector(rowId === 'new' ? '#require-username' : `[name="require_username-${rowId}"]`);
+        const globalPass = document.querySelector(rowId === 'new' ? '#require-password' : `[name="require_password-${rowId}"]`);
+        const selfBox = document.getElementById(rowId === 'new' ? 'self-credentials-box-new' : `self-credentials-box-${rowId}`);
+        
+        if (selfChecked) {
+            // Lock and uncheck global credentials
+            if (globalUser) {
+                globalUser.checked = false;
+                globalUser.disabled = true;
+                globalUser.parentElement.classList.add('muted');
+            }
+            if (globalPass) {
+                globalPass.checked = false;
+                globalPass.disabled = true;
+                globalPass.parentElement.classList.add('muted');
+            }
+            // Show specific self credentials checkboxes
+            if (selfBox) selfBox.classList.remove('hidden');
+        } else {
+            // Unlock global credentials
+            if (globalUser) {
+                globalUser.disabled = false;
+                globalUser.parentElement.classList.remove('muted');
+            }
+            if (globalPass) {
+                globalPass.disabled = false;
+                globalPass.parentElement.classList.remove('muted');
+            }
+            // Hide specific self credentials
+            if (selfBox) selfBox.classList.add('hidden');
+        }
+    };
+
     const initCreateFormGuards = () => {
         const form = document.getElementById('create-product-form');
         if (!form) return;
@@ -303,6 +372,11 @@
                 cashbackInput.disabled = locked || !(cashbackToggle && cashbackToggle.checked);
                 if (locked) cashbackInput.value = '0';
             }
+            
+            // Also trigger self credentials logic
+            if (selfToggle) {
+                updateSelfCredentialsState('new', selfToggle.checked && !locked);
+            }
         };
 
         if (requestOnly) requestOnly.addEventListener('change', syncRequestOnlyState);
@@ -312,8 +386,14 @@
                 if (!cashbackToggle.checked) cashbackInput.value = '0';
             }
         });
+        if (selfToggle) {
+            selfToggle.addEventListener('change', () => {
+                updateSelfCredentialsState('new', selfToggle.checked);
+            });
+        }
 
         syncRequestOnlyState();
+        if (selfToggle) updateSelfCredentialsState('new', selfToggle.checked);
     };
 
     const clampRowState = (row) => {
@@ -359,6 +439,11 @@
         if (cashbackInput) {
             cashbackInput.disabled = requestMode || !(cashbackToggle && cashbackToggle.checked);
             if (requestMode) cashbackInput.value = '0';
+        }
+        
+        // Handle Self toggle Logic
+        if (selfToggle) {
+            updateSelfCredentialsState(id, selfToggle.checked && !requestMode);
         }
     };
 
