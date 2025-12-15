@@ -68,6 +68,19 @@ async def _create_order_and_confirm(
     ensure_user(tg_user.id, tg_user.username, tg_user.first_name or "")
     user = get_user(tg_user.id)
     
+    # Determine which requirement flags to store in order based on mode
+    req_user = False
+    req_pass = False
+    if mode == "MY_ACCOUNT":
+        req_user = bool(product.get("self_require_username"))
+        req_pass = bool(product.get("self_require_password"))
+    elif mode == "PREBUILT":
+        req_user = False
+        req_pass = False
+    else:
+        req_user = bool(product.get("require_username"))
+        req_pass = bool(product.get("require_password"))
+
     order_id = create_order(
         user=user,
         title=product.get("title") or f"محصول #{product_id}",
@@ -78,8 +91,8 @@ async def _create_order_and_confirm(
         account_mode=mode,
         customer_email=None,
         notes=product.get("description") or "",
-        require_username=bool(product.get("require_username")),
-        require_password=bool(product.get("require_password")),
+        require_username=req_user,
+        require_password=req_pass,
         customer_username=username,
         customer_password=password,
         allow_first_plan=bool(product.get("allow_first_plan")),
@@ -93,7 +106,6 @@ async def _create_order_and_confirm(
         )
         return
     
-    # اصلاح شده: حذف دکمه‌های پرداخت (ik_cart_actions) و نمایش منوی اصلی
     await message.answer(
         f"✅ سفارش #{order_id} برای «{product.get('title')}» ثبت شد و به سبد خرید اضافه شد. برای ادامه و پرداخت به سبد خرید مراجعه کنید.",
         reply_markup=reply_main(),
@@ -123,8 +135,24 @@ async def _begin_purchase(
     if price <= 0:
         await callback.message.answer("قیمت این سرویس صفر است و به‌صورت رایگان ثبت می‌شود.")
 
-    require_username = bool(product.get("require_username"))
-    require_password = bool(product.get("require_password"))
+    # --- اصلاح شده: تعیین نیاز به یوزر/پسورد بر اساس مود ---
+    require_username = False
+    require_password = False
+
+    if product.get("account_enabled"):
+        if mode == "self":
+            # در حالت اکانت خودم، از فیلدهای جدید استفاده کن
+            require_username = bool(product.get("self_require_username"))
+            require_password = bool(product.get("self_require_password"))
+        elif mode == "pre":
+            # در حالت اکانت آماده، نیازی به یوزر و پسورد نیست
+            require_username = False
+            require_password = False
+    else:
+        # حالت عادی (بدون اکانت مود)
+        require_username = bool(product.get("require_username"))
+        require_password = bool(product.get("require_password"))
+    # -----------------------------------------------------
 
     await state.clear()
     account_mode = ""
@@ -140,6 +168,9 @@ async def _begin_purchase(
                 require_password=require_password,
                 product_title=product.get("title"),
                 description=product.get("description") or "",
+                # Store flags for checking later
+                _req_user=True,
+                _req_pass=require_password
             )
         )
         await state.set_state(CatalogStates.wait_username)
@@ -156,6 +187,8 @@ async def _begin_purchase(
                 username="",
                 product_title=product.get("title"),
                 description=product.get("description") or "",
+                _req_user=False,
+                _req_pass=True
             )
         )
         await state.set_state(CatalogStates.wait_password)
@@ -372,7 +405,7 @@ async def on_username(message: Message, state: FSMContext) -> None:
 
     await _create_order_and_confirm(
         message,
-        tg_user=message.from_user,  # Passed correctly here
+        tg_user=message.from_user,
         product=product,
         product_id=product_id,
         mode=pending.get("mode") or "",
@@ -398,7 +431,7 @@ async def on_password(message: Message, state: FSMContext) -> None:
 
     await _create_order_and_confirm(
         message,
-        tg_user=message.from_user,  # Passed correctly here
+        tg_user=message.from_user,
         product=product,
         product_id=product_id,
         mode=pending.get("mode") or "",
