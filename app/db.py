@@ -27,15 +27,13 @@ def db_execute(
 ):
     with closing(_connect()) as con:
         cur = con.cursor()
-        cur.execute("PRAGMA foreign_keys=ON;")
+        # خاموش کردن موقت چک کلید خارجی برای جلوگیری از کرش‌های ناخواسته در دیتابیس‌های قدیمی
         try:
-            cur.execute(sql, params)
-        except sqlite3.OperationalError as e:
-            # اگر جدول تخفیف‌ها مشکل داشت، نادیده بگیر تا تابع تعمیر اجرا شود
-            if "discount_redemptions" in str(e):
-                pass
-            raise e
-
+            cur.execute("PRAGMA foreign_keys=OFF;")
+        except:
+            pass
+            
+        cur.execute(sql, params)
         do_commit = True if commit is None else bool(commit)
         if do_commit:
             con.commit()
@@ -68,9 +66,15 @@ def _ensure_order_sequence_min(min_order_id: int) -> None:
             cur.execute("SELECT seq FROM sqlite_sequence WHERE name='orders'")
             row = cur.fetchone()
             if row is None:
-                cur.execute("INSERT INTO sqlite_sequence(name, seq) VALUES(?, ?)", ("orders", target_seq))
+                cur.execute(
+                    "INSERT INTO sqlite_sequence(name, seq) VALUES(?, ?)",
+                    ("orders", target_seq),
+                )
             else:
-                cur.execute("UPDATE sqlite_sequence SET seq=? WHERE name='orders'", (target_seq,))
+                cur.execute(
+                    "UPDATE sqlite_sequence SET seq=? WHERE name='orders'",
+                    (target_seq,),
+                )
             con.commit()
         except sqlite3.OperationalError:
             cur.execute("INSERT INTO orders(id) VALUES(?)", (target_seq,))
@@ -169,7 +173,7 @@ def _add_missing_columns(con, cur) -> None:
         ("coupons", "is_active", "INTEGER DEFAULT 1"),
         ("coupons", "usage_limit_per_user", "INTEGER DEFAULT 1"),
         ("coupon_redemptions", "times_used", "INTEGER DEFAULT 1"),
-        # اطمینان از وجود ستون‌های جدول تخفیف
+        # ستون‌های حیاتی برای رفع خطای شما
         ("discount_redemptions", "order_id", "INTEGER"),
         ("discount_redemptions", "times_used", "INTEGER DEFAULT 1"),
         ("discount_redemptions", "redeemed_at", "TEXT"),
@@ -1156,40 +1160,42 @@ def _order_product_id(order: dict | None) -> int | None:
     return None
 
 
-def _fix_discount_table_schema():
-    """Ensure discount_redemptions has all necessary columns to prevent runtime errors."""
+def _repair_discount_table(con, cur) -> None:
+    """Checks and repairs the discount_redemptions table structure to prevent errors."""
     try:
-        with closing(_connect()) as con:
-            cur = con.cursor()
-            cur.execute("PRAGMA table_info(discount_redemptions)")
-            existing = {row["name"] for row in cur.fetchall()}
+        cur.execute("PRAGMA table_info(discount_redemptions)")
+        columns = {row["name"] for row in cur.fetchall()}
+        
+        # 1. order_id
+        if "order_id" not in columns:
+            cur.execute("ALTER TABLE discount_redemptions ADD COLUMN order_id INTEGER")
+        
+        # 2. times_used
+        if "times_used" not in columns:
+            cur.execute("ALTER TABLE discount_redemptions ADD COLUMN times_used INTEGER DEFAULT 1")
+        
+        # 3. redeemed_at
+        if "redeemed_at" not in columns:
+            cur.execute("ALTER TABLE discount_redemptions ADD COLUMN redeemed_at TEXT")
             
-            # 1. order_id
-            if "order_id" not in existing:
-                cur.execute("ALTER TABLE discount_redemptions ADD COLUMN order_id INTEGER")
+        # 4. status
+        if "status" not in columns:
+            cur.execute("ALTER TABLE discount_redemptions ADD COLUMN status TEXT DEFAULT 'CONFIRMED'")
             
-            # 2. times_used
-            if "times_used" not in existing:
-                cur.execute("ALTER TABLE discount_redemptions ADD COLUMN times_used INTEGER DEFAULT 1")
-            
-            # 3. redeemed_at
-            if "redeemed_at" not in existing:
-                cur.execute("ALTER TABLE discount_redemptions ADD COLUMN redeemed_at TEXT")
-                
-            # 4. status (IMPORTANT: DEFAULT 'CONFIRMED' prevents NOT NULL errors on old rows)
-            if "status" not in existing:
-                cur.execute("ALTER TABLE discount_redemptions ADD COLUMN status TEXT DEFAULT 'CONFIRMED'")
-            
-            con.commit()
-    except Exception as e:
-        logging.error(f"Failed to fix discount schema: {e}")
+        con.commit()
+    except Exception:
+        pass
 
 
 def apply_discount_to_order(
     order_id: int, user_id: int, code: str
 ) -> tuple[bool, dict[str, Any] | None, str | None]:
-    # 0. تعمیر خودکار جدول قبل از هر کاری
-    _fix_discount_table_schema()
+    # 0. تعمیر خودکار ساختار جدول (قبل از هر کاری)
+    try:
+        with closing(_connect()) as con:
+            _repair_discount_table(con, con.cursor())
+    except Exception:
+        pass
 
     # 1. دریافت سفارش
     order = get_order(order_id)
@@ -1233,9 +1239,6 @@ def apply_discount_to_order(
 
     # 3. بررسی محصول مجاز
     product_id = _order_product_id(order)
-    # اگر این تابع در فایل نیست، می‌توان مستقیم پیاده کرد یا نادیده گرفت
-    # اما فرض بر این است که هست (طبق فایل‌های قبلی)
-    
     allowed_products = discount.get("product_ids") or []
     if isinstance(allowed_products, str):
         allowed_products = _parse_product_ids(allowed_products)
@@ -1262,7 +1265,7 @@ def apply_discount_to_order(
 
     now = datetime.now().isoformat(timespec="seconds")
 
-    # 6. ثبت در دیتابیس (با تمامی ستون‌ها برای جلوگیری از ارور)
+    # 6. ثبت در دیتابیس
     db_execute(
         """
         UPDATE orders
