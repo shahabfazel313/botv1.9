@@ -526,7 +526,7 @@ def set_order_status(order_id: int, status: str):
         (status, datetime.now().isoformat(timespec="seconds"), order_id),
     )
     updated = get_order(order_id)
-    paid_statuses = {"IN_PROGRESS", "READY_TO_DELIVER", "DELIVERED", "COMPLETED"}
+    cashback_statuses = {"DELIVERED", "COMPLETED"}
     if (
         updated
         and previous
