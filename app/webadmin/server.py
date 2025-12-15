@@ -425,6 +425,11 @@ def create_admin_app() -> FastAPI:
             self_price = int(form.get("self_price") or 0)
         except ValueError:
             self_price = 0
+        
+        # New fields for self account credentials
+        self_require_username = form.get("self_require_username") == "on"
+        self_require_password = form.get("self_require_password") == "on"
+
         try:
             pre_price = int(form.get("pre_price") or 0)
         except ValueError:
@@ -454,6 +459,8 @@ def create_admin_app() -> FastAPI:
             pre_price = 0
             require_username = False
             require_password = False
+            self_require_username = False
+            self_require_password = False
             allow_first_plan = False
             cashback_enabled = False
             cashback_percent = 0
@@ -472,6 +479,8 @@ def create_admin_app() -> FastAPI:
             pre_price = 0
             require_username = False
             require_password = False
+            self_require_username = False
+            self_require_password = False
             allow_first_plan = False
             cashback_enabled = False
             cashback_percent = 0
@@ -493,6 +502,8 @@ def create_admin_app() -> FastAPI:
             account_enabled=account_enabled,
             self_available=self_available,
             self_price=self_price,
+            self_require_username=self_require_username,
+            self_require_password=self_require_password,
             pre_available=pre_available,
             pre_price=pre_price,
             require_username=require_username,
@@ -539,6 +550,11 @@ def create_admin_app() -> FastAPI:
             self_price = int(form.get("self_price") or 0)
         except ValueError:
             self_price = 0
+        
+        # New fields for self account credentials
+        self_require_username = form.get("self_require_username") == "on"
+        self_require_password = form.get("self_require_password") == "on"
+
         try:
             pre_price = int(form.get("pre_price") or 0)
         except ValueError:
@@ -564,6 +580,8 @@ def create_admin_app() -> FastAPI:
             pre_price = 0
             require_username = False
             require_password = False
+            self_require_username = False
+            self_require_password = False
             allow_first_plan = False
             cashback_enabled = False
             cashback_percent = 0
@@ -582,6 +600,8 @@ def create_admin_app() -> FastAPI:
             pre_price = 0
             require_username = False
             require_password = False
+            self_require_username = False
+            self_require_password = False
 
         if has_sort_conflict(
             parent_id=parent_id, is_category=is_category, sort_order=sort_order, exclude_id=product_id
@@ -601,6 +621,8 @@ def create_admin_app() -> FastAPI:
             account_enabled=account_enabled,
             self_available=self_available,
             self_price=self_price,
+            self_require_username=self_require_username,
+            self_require_password=self_require_password,
             pre_available=pre_available,
             pre_price=pre_price,
             require_username=require_username,
@@ -672,6 +694,11 @@ def create_admin_app() -> FastAPI:
                 self_price = int(form.get(f"self_price-{pid}") or 0)
             except ValueError:
                 self_price = 0
+            
+            # New fields for self account credentials in bulk update
+            self_require_username = form.get(f"self_require_username-{pid}") == "on"
+            self_require_password = form.get(f"self_require_password-{pid}") == "on"
+
             try:
                 pre_price = int(form.get(f"pre_price-{pid}") or 0)
             except ValueError:
@@ -701,6 +728,8 @@ def create_admin_app() -> FastAPI:
                 pre_price = 0
                 require_username = False
                 require_password = False
+                self_require_username = False
+                self_require_password = False
                 allow_first_plan = False
                 cashback_enabled = False
                 cashback_percent = 0
@@ -719,6 +748,8 @@ def create_admin_app() -> FastAPI:
                 pre_price = 0
                 require_username = False
                 require_password = False
+                self_require_username = False
+                self_require_password = False
                 allow_first_plan = False
                 cashback_enabled = False
                 cashback_percent = 0
@@ -748,6 +779,8 @@ def create_admin_app() -> FastAPI:
                     account_enabled=account_enabled,
                     self_available=self_available,
                     self_price=self_price,
+                    self_require_username=self_require_username,
+                    self_require_password=self_require_password,
                     pre_available=pre_available,
                     pre_price=pre_price,
                     require_username=require_username,
@@ -770,6 +803,8 @@ def create_admin_app() -> FastAPI:
                 account_enabled=payload["account_enabled"],
                 self_available=payload["self_available"],
                 self_price=payload["self_price"],
+                self_require_username=payload["self_require_username"],
+                self_require_password=payload["self_require_password"],
                 pre_available=payload["pre_available"],
                 pre_price=payload["pre_price"],
                 require_username=payload["require_username"],
@@ -1253,13 +1288,23 @@ def create_admin_app() -> FastAPI:
     async def wallet_page(request: Request, user: str = Depends(_login_required)):
         summary = get_wallet_summary()
         recent = list_recent_wallet_tx(limit=50)
+        
+        # اصلاح نمایش نوع تراکنش برای کش‌بک
+        display_transactions = []
+        for tx in recent:
+            row = dict(tx)  # کپی کردن دیکشنری
+            note = str(row.get("note") or "")
+            if note.startswith("CASHBACK:"):
+                row["type"] = "CASHBACK"
+            display_transactions.append(row)
+
         return _render(
             request,
             "wallet.html",
             {
                 "title": "گزارش کیف پول",
                 "summary": summary,
-                "transactions": recent,
+                "transactions": display_transactions,
                 "format_amount": _format_amount,
                 "format_datetime": _format_datetime,
                 "nav": "wallet",
