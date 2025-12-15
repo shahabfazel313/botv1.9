@@ -178,6 +178,9 @@ async def _notify_user(user_id: int, text: str) -> None:
 async def _telegram_file_response(file_id: str) -> StreamingResponse:
     if not file_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="فایل یافت نشد")
+    
+    file_path = None
+    # مرحله ۱: دریافت مسیر فایل (متادیتا)
     try:
         async with httpx.AsyncClient() as client:
             meta = await client.get(
@@ -189,31 +192,33 @@ async def _telegram_file_response(file_id: str) -> StreamingResponse:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail="فایل در تلگرام یافت نشد")
             data = meta.json().get("result") or {}
             file_path = data.get("file_path")
-            if not file_path:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="مسیر فایل یافت نشد")
-            file_url = f"{TELEGRAM_API_BASE}/file/bot{BOT_TOKEN}/{file_path}"
-            stream = await client.get(file_url, timeout=30.0, stream=True)
-            if stream.status_code != 200:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="دانلود فایل ممکن نشد")
-
-            filename = Path(file_path).name
-
-            async def iterator():
-                async with stream:
-                    async for chunk in stream.aiter_bytes():
-                        yield chunk
-
-            return StreamingResponse(
-                iterator(),
-                media_type=stream.headers.get("content-type", "application/octet-stream"),
-                headers={"Content-Disposition": f"inline; filename={filename}"},
-            )
-    except HTTPException:
-        raise
     except httpx.HTTPError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="خطا در ارتباط با تلگرام") from exc
-    except Exception as exc:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="دانلود فایل با خطا مواجه شد") from exc
+
+    if not file_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="مسیر فایل یافت نشد")
+
+    file_url = f"{TELEGRAM_API_BASE}/file/bot{BOT_TOKEN}/{file_path}"
+    filename = Path(file_path).name
+
+    # مرحله ۲: ایجاد یک تولیدکننده (Generator) که خودش کلاینت را مدیریت می‌کند
+    async def file_iterator():
+        try:
+            async with httpx.AsyncClient() as stream_client:
+                async with stream_client.stream("GET", file_url, timeout=30.0) as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="دانلود فایل ممکن نشد")
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+        except Exception:
+            pass
+
+    return StreamingResponse(
+        file_iterator(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"inline; filename={filename}"},
+    )
+    
 
 
 def _login_required(request: Request) -> str:
