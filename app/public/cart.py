@@ -23,16 +23,18 @@ from ..db import (
     set_order_wallet_used,
     user_has_delivered_order,
     refresh_order_deadline,
+    remove_order_discount,  # اطمینان حاصل کنید این تابع در db.py وجود دارد
 )
 from ..keyboards import (
     ik_card_receipt_prompt,
-    ik_discount_apply,
-    ik_discount_offer,
+    ik_wallet_confirm,
     ik_plan_review,
     ik_receipt_review,
-    ik_wallet_confirm,
     reply_main,
     reply_request_contact,
+    ik_checkout_summary,
+    ik_discount_input_action,
+    ik_cart_actions,
 )
 from ..states import CheckoutStates, VerifyStates
 from ..utils import mention
@@ -73,21 +75,58 @@ def _order_allows_plan(order: dict) -> bool:
     return bool(order.get("allow_first_plan")) or order.get("service_category") == "AI"
 
 
-async def _prompt_discount(callback: CallbackQuery, state: FSMContext, order_id: int, method: str) -> None:
-    await state.update_data(pending_payment={"order_id": order_id, "method": method, "discount_code": ""})
-    await state.set_state(CheckoutStates.wait_discount_choice)
-    await callback.message.answer(
-        "آیا کد تخفیف دارید؟",
-        reply_markup=ik_discount_offer(order_id),
+# --- New Checkout Logic ---
+
+async def _show_checkout_summary(callback: CallbackQuery, state: FSMContext, order_id: int):
+    order = get_order(order_id)
+    if not order:
+        await callback.answer("سفارش یافت نشد.", show_alert=True)
+        return
+
+    # محاسبه مبالغ
+    base_price = int(order.get("amount_total") or order.get("price") or 0)
+    discount_amount = int(order.get("discount_amount") or 0)
+    discount_code = order.get("discount_code")
+    payable = max(base_price - discount_amount, 0)
+    
+    # ساخت متن پیام
+    lines = [f"🧾 <b>صورت‌حساب نهایی سفارش #{order_id}</b>\n"]
+    
+    lines.append(f"💰 مبلغ کل سفارش: <b>{base_price:,} {CURRENCY}</b>")
+    
+    if discount_code and discount_amount > 0:
+        lines.append(f"🎟 کد تخفیف اعمال شده: <code>{discount_code}</code>")
+        lines.append(f"® مبلغ تخفیف: <b>{discount_amount:,} {CURRENCY}</b>")
+    else:
+        lines.append("🎟 کد تخفیف: <b>اعمال نشده</b>")
+    
+    lines.append("-" * 20)
+    lines.append(f"💵 <b>مبلغ قابل پرداخت: {payable:,} {CURRENCY}</b>")
+    
+    text = "\n".join(lines)
+    
+    # نمایش کیبورد جدید
+    await callback.message.edit_text(
+        text, 
+        reply_markup=ik_checkout_summary(order_id, has_discount=bool(discount_amount > 0))
     )
-    await callback.answer()
+
+
+async def _start_checkout_flow(callback: CallbackQuery, state: FSMContext, order_id: int, method: str) -> None:
+    """شروع پروسه نهایی کردن خرید (نمایش سامری)"""
+    # ذخیره روش پرداخت انتخاب شده
+    await state.update_data(pending_payment={"order_id": order_id, "method": method})
+    # نمایش خلاصه وضعیت
+    await _show_checkout_summary(callback, state, order_id)
 
 
 async def _continue_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """هدایت به مرحله پرداخت نهایی (کارت/کیف پول/...) بر اساس متد ذخیره شده"""
     data = await state.get_data()
     pending = data.get("pending_payment") or {}
     order_id = int(pending.get("order_id") or 0)
     method = pending.get("method")
+    
     order = _load_payable_order(order_id, callback.from_user.id)
     if not order:
         await callback.answer("سفارش قابل ادامه نیست.", show_alert=True)
@@ -106,7 +145,8 @@ async def _continue_payment(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
-    await state.update_data(pending_payment=None)
+    # پاک کردن داده‌های موقت کد تخفیف اما نگه داشتن متد پرداخت
+    # await state.update_data(pending_payment=None) # حذف شد تا متد حفظ شود
 
     if method == "CARD":
         set_order_payment_type(order_id, "CARD")
@@ -161,6 +201,8 @@ async def _continue_payment(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer("روش پرداخت نامعتبر است.", show_alert=True)
 
 
+# --- Handlers for Payment Methods ---
+
 @router.callback_query(F.data.startswith("cart:paycard:"))
 async def cb_cart_paycard(callback: CallbackQuery, state: FSMContext) -> None:
     if not await _require_contact_verification(callback, state):
@@ -170,8 +212,164 @@ async def cb_cart_paycard(callback: CallbackQuery, state: FSMContext) -> None:
     if not order:
         await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
         return
-    await _prompt_discount(callback, state, order_id, "CARD")
+    await _start_checkout_flow(callback, state, order_id, "CARD")
 
+
+@router.callback_query(F.data.startswith("cart:paywallet:"))
+async def cb_cart_paywallet(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _require_contact_verification(callback, state):
+        return
+    order_id = int(callback.data.split(":")[2])
+    order = _load_payable_order(order_id, callback.from_user.id)
+    if not order:
+        await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
+        return
+    await _start_checkout_flow(callback, state, order_id, "WALLET")
+
+
+@router.callback_query(F.data.startswith("cart:paymix:"))
+async def cb_cart_paymix(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _require_contact_verification(callback, state):
+        return
+    order_id = int(callback.data.split(":")[2])
+    order = _load_payable_order(order_id, callback.from_user.id)
+    if not order:
+        await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
+        return
+    await _start_checkout_flow(callback, state, order_id, "MIXED")
+
+
+# --- Checkout Summary Handlers ---
+
+@router.callback_query(F.data.startswith("checkout:summary:"))
+async def cb_back_to_summary(callback: CallbackQuery, state: FSMContext) -> None:
+    """برگشت به صفحه سامری از منوی وارد کردن کد"""
+    order_id = int(callback.data.split(":")[2])
+    await _show_checkout_summary(callback, state, order_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("checkout:proceed:"))
+async def cb_checkout_proceed(callback: CallbackQuery, state: FSMContext) -> None:
+    """ادامه خرید (تکمیل پرداخت)"""
+    order_id = int(callback.data.split(":")[2])
+    # فراخوانی تابع پرداخت نهایی
+    await _continue_payment(callback, state)
+
+
+@router.callback_query(F.data.startswith("checkout:disc:input:"))
+async def cb_checkout_input_disc(callback: CallbackQuery, state: FSMContext) -> None:
+    """کاربر دکمه 'کد تخفیف دارم' را زده است."""
+    order_id = int(callback.data.split(":")[3])
+    
+    # ذخیره ID سفارش در استیت برای اطمینان
+    data = await state.get_data()
+    pending = data.get("pending_payment") or {}
+    pending["order_id"] = order_id
+    await state.update_data(pending_payment=pending)
+    
+    await state.set_state(CheckoutStates.wait_discount_code)
+    await callback.message.edit_text(
+        "🎟 لطفاً کد تخفیف خود را ارسال کنید و سپس دکمه «✅ اعمال کد» را بزنید.",
+        reply_markup=ik_discount_input_action(order_id)
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("checkout:disc:remove:"))
+async def cb_checkout_remove_disc(callback: CallbackQuery, state: FSMContext) -> None:
+    """کاربر دکمه 'حذف کد تخفیف' را زده است."""
+    order_id = int(callback.data.split(":")[3])
+    if remove_order_discount(order_id):
+        await callback.answer("کد تخفیف حذف شد.", show_alert=True)
+    else:
+        await callback.answer("خطایی رخ داد یا کدی وجود نداشت.", show_alert=True)
+    await _show_checkout_summary(callback, state, order_id)
+
+
+@router.callback_query(F.data.startswith("checkout:back:"))
+async def cb_checkout_back(callback: CallbackQuery, state: FSMContext) -> None:
+    """دکمه بازگشت به صفحه انتخاب روش پرداخت (سبد خرید)"""
+    order_id = int(callback.data.split(":")[2])
+    order = get_order(order_id)
+    await state.clear()  # پاک کردن استیت‌های موقت
+    
+    if order and order.get("user_id") == callback.from_user.id:
+        from .menu import _status_fa, _order_title  # ایمپورت داخلی برای جلوگیری از چرخه
+        
+        # بازسازی پیام سبد خرید (مشابه menu.py)
+        title = _order_title(
+            order.get("service_category", ""),
+            order.get("service_code", ""),
+            order.get("notes"),
+            order.get("plan_title"),
+        )
+        payable = get_order_payable_amount(order)
+        discount = int(order.get("discount_amount") or 0)
+        reserved = min(int(order.get("wallet_reserved_amount") or 0), payable)
+        remaining = max(payable - reserved, 0)
+        
+        text = (
+            f"🧺 سفارش #{order['id']} — <b>{title}</b>\n"
+            f"مبلغ کل: <b>{payable} {CURRENCY}</b>\n"
+            + (f"تخفیف اعمال‌شده: <b>{discount} {CURRENCY}</b>\n" if discount else "")
+            + f"از کیف پول رزرو شده: <b>{reserved} {CURRENCY}</b>\n"
+            + f"باقیمانده برای پرداخت کارت: <b>{remaining} {CURRENCY}</b>\n"
+            f"وضعیت: <b>{_status_fa(order['status'])}</b>"
+        )
+        enable_plan = bool(order.get("allow_first_plan")) or order.get("service_category") == "AI"
+        
+        await callback.message.edit_text(text, reply_markup=ik_cart_actions(order_id, enable_plan=enable_plan))
+    else:
+        await callback.message.delete()
+        
+    await callback.answer()
+
+
+@router.message(CheckoutStates.wait_discount_code)
+async def on_checkout_discount_text(message: Message, state: FSMContext) -> None:
+    """متن کد تخفیف را می‌گیرد و در استیت ذخیره می‌کند."""
+    code = (message.text or "").strip()
+    if not code:
+        await message.reply("لطفاً یک کد معتبر وارد کنید.")
+        return
+    
+    # کد را در استیت ذخیره می‌کنیم تا وقتی کاربر دکمه "اعمال" را زد استفاده شود
+    data = await state.get_data()
+    pending = data.get("pending_payment") or {}
+    pending["temp_discount_code"] = code
+    await state.update_data(pending_payment=pending)
+    
+    # پیام تایید دریافت به کاربر
+    await message.reply(f"کد «{code}» دریافت شد. حالا دکمه «✅ اعمال کد» را بزنید.")
+
+
+@router.callback_query(F.data.startswith("checkout:disc:apply:"))
+async def cb_checkout_apply_disc(callback: CallbackQuery, state: FSMContext) -> None:
+    """کاربر دکمه اعمال را زد."""
+    order_id = int(callback.data.split(":")[3])
+    data = await state.get_data()
+    pending = data.get("pending_payment") or {}
+    code = pending.get("temp_discount_code")
+    
+    if not code:
+        await callback.answer("هنوز کدی ارسال نکرده‌اید!", show_alert=True)
+        return
+
+    success, result, error = apply_discount_to_order(order_id, callback.from_user.id, code)
+    
+    if success:
+        # پاک کردن کد موقت از استیت
+        pending.pop("temp_discount_code", None)
+        await state.update_data(pending_payment=pending)
+        await callback.answer(f"کد با موفقیت اعمال شد. مبلغ جدید: {result.get('payable')}", show_alert=True)
+        # بازگشت به صفحه سامری
+        await _show_checkout_summary(callback, state, order_id)
+    else:
+        await callback.answer(f"خطا: {error}", show_alert=True)
+
+
+# --- Receipt & Other Handlers ---
 
 @router.message(CheckoutStates.wait_card_receipt)
 async def on_card_receipt(message: Message, state: FSMContext) -> None:
@@ -312,18 +510,6 @@ async def cb_receipt_confirm(callback: CallbackQuery, state: FSMContext) -> None
                 await callback.bot.send_message(admin_id, text_body)
         except Exception:
             pass
-
-
-@router.callback_query(F.data.startswith("cart:paywallet:"))
-async def cb_cart_paywallet(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_contact_verification(callback, state):
-        return
-    order_id = int(callback.data.split(":")[2])
-    order = _load_payable_order(order_id, callback.from_user.id)
-    if not order:
-        await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
-        return
-    await _prompt_discount(callback, state, order_id, "WALLET")
 
 
 @router.message(CheckoutStates.wait_wallet_comment)
@@ -501,89 +687,6 @@ async def cb_plan_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     if comment:
         notice += f"\n\n📝 توضیح مشتری:\n{comment}"
     await _notify_admins(callback.bot, notice)
-
-
-@router.callback_query(F.data.startswith("cart:paymix:"))
-async def cb_cart_paymix(callback: CallbackQuery, state: FSMContext) -> None:
-    if not await _require_contact_verification(callback, state):
-        return
-    order_id = int(callback.data.split(":")[2])
-    order = _load_payable_order(order_id, callback.from_user.id)
-    if not order:
-        await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
-        return
-    await _prompt_discount(callback, state, order_id, "MIXED")
-
-
-@router.callback_query(F.data.startswith("disc:have:"))
-async def cb_discount_have(callback: CallbackQuery, state: FSMContext) -> None:
-    order_id = int(callback.data.split(":")[2])
-    data = await state.get_data()
-    pending = data.get("pending_payment") or {}
-    if int(pending.get("order_id") or 0) != order_id:
-        await callback.answer("ابتدا روش پرداخت را انتخاب کنید.", show_alert=True)
-        return
-    await state.set_state(CheckoutStates.wait_discount_code)
-    await callback.message.answer(
-        "لطفاً کد تخفیف خود را وارد کنید و سپس دکمهٔ «اعمال» را بزنید.",
-        reply_markup=ik_discount_apply(order_id),
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("disc:none:"))
-async def cb_discount_none(callback: CallbackQuery, state: FSMContext) -> None:
-    await _continue_payment(callback, state)
-
-
-@router.callback_query(F.data.startswith("disc:back:"))
-async def cb_discount_back(callback: CallbackQuery, state: FSMContext) -> None:
-    order_id = int(callback.data.split(":")[2])
-    order = get_order(order_id)
-    await state.clear()
-    if order and order.get("user_id") == callback.from_user.id:
-        await callback.message.answer(
-            "به سبد خرید برگشتید. روش پرداخت را انتخاب کنید.",
-            reply_markup=ik_cart_actions(order_id, enable_plan=_order_allows_plan(order)),
-        )
-    await callback.answer()
-
-
-@router.message(CheckoutStates.wait_discount_code)
-async def on_discount_code(message: Message, state: FSMContext) -> None:
-    code = (message.text or "").strip()
-    data = await state.get_data()
-    pending = data.get("pending_payment") or {}
-    pending["discount_code"] = code
-    await state.update_data(pending_payment=pending)
-    await message.answer("کد دریافت شد. برای اعمال، روی دکمهٔ «اعمال» بزنید یا کد دیگری وارد کنید.")
-
-
-@router.callback_query(F.data.startswith("disc:apply:"))
-async def cb_discount_apply(callback: CallbackQuery, state: FSMContext) -> None:
-    try:
-        order_id = int(callback.data.split(":")[2])
-        data = await state.get_data()
-        pending = data.get("pending_payment") or {}
-        if int(pending.get("order_id") or 0) != order_id:
-            await callback.answer("کد تخفیف برای این سفارش فعال نشده است.", show_alert=True)
-            return
-        code = (pending.get("discount_code") or "").strip()
-        if not code:
-            await callback.answer("ابتدا کد تخفیف را وارد کنید.", show_alert=True)
-            return
-        
-        success, result, error = apply_discount_to_order(order_id, callback.from_user.id, code)
-        
-        if not success:
-            await callback.answer(error or "اعمال نشد.", show_alert=True)
-            return
-        await callback.message.answer(
-            f"✅ کد تخفیف {result.get('code')} اعمال شد. مبلغ قابل پرداخت: {result.get('payable')} {CURRENCY}",
-        )
-        await _continue_payment(callback, state)
-    except Exception as e:
-        await callback.answer(f"خطایی رخ داد: {str(e)}", show_alert=True)
 
 
 @router.message(CheckoutStates.wait_mixed_amount)
