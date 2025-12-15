@@ -73,6 +73,7 @@ from ..db import (
     update_product,
     set_order_financials,
     has_sort_conflict,
+    delete_service_message,  # اضافه شده
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -884,6 +885,20 @@ def create_admin_app() -> FastAPI:
         label = "بسته" if resolved else "باز"
         _flash(request, f"وضعیت پیام به «{label}» تغییر کرد.")
         return RedirectResponse(request.url_for("message_detail", message_id=message_id), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/messages/{message_id}/delete", name="message_delete")
+    async def message_delete(
+        request: Request,
+        message_id: int,
+        user: str = Depends(_login_required),
+    ):
+        message = get_service_message(message_id)
+        if not message:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="پیام یافت نشد")
+        
+        delete_service_message(message_id)
+        _flash(request, "پیام با موفقیت حذف شد.", "success")
+        return RedirectResponse(request.url_for("messages"), status.HTTP_303_SEE_OTHER)
 
     @app.post("/orders/{order_id}/update")
     async def update_order(
