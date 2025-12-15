@@ -1929,3 +1929,31 @@ def update_product(
 
 def delete_product(product_id: int) -> None:
     db_execute("DELETE FROM products WHERE id=?", (product_id,))
+# در انتهای فایل app/db.py این تابع را اضافه کنید
+
+def remove_order_discount(order_id: int) -> bool:
+    """Removes discount from an order and cleans up redemption records."""
+    order = get_order(order_id)
+    if not order:
+        return False
+    
+    discount_id = order.get("discount_id")
+    if not discount_id:
+        return True  # قبلاً تخفیف نداشته
+
+    # 1. حذف رکورد استفاده از جدول discount_redemptions
+    db_execute("DELETE FROM discount_redemptions WHERE order_id=?", (order_id,))
+
+    # 2. کاهش شمارنده استفاده در جدول discounts
+    db_execute("UPDATE discounts SET used_count = MAX(0, used_count - 1) WHERE id=?", (discount_id,))
+
+    # 3. صفر کردن فیلدهای تخفیف در جدول orders
+    db_execute(
+        """
+        UPDATE orders 
+        SET discount_id=NULL, discount_code='', discount_amount=0, updated_at=?
+        WHERE id=?
+        """,
+        (datetime.now().isoformat(timespec="seconds"), order_id)
+    )
+    return True
