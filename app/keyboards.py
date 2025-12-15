@@ -43,7 +43,7 @@ def ik_force_join(join_url: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-# ====== Legacy Inline Keyboards (برای بخش‌هایی که هنوز بازطراحی نشده‌اند) ======
+# ====== Legacy Inline Keyboards ======
 
 def kb_home() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -235,21 +235,40 @@ def ik_cart_actions(order_id: int, *, enable_plan: bool = False) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def ik_discount_offer(order_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="✅ دارم", callback_data=f"disc:have:{order_id}")],
-        [InlineKeyboardButton(text="❌ ندارم", callback_data=f"disc:none:{order_id}")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"disc:back:{order_id}")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+# ====== NEW: Checkout Summary & Discount Flow ======
+
+def ik_checkout_summary(order_id: int, has_discount: bool) -> InlineKeyboardMarkup:
+    """کیبورد مرحله خلاصه وضعیت (بعد از انتخاب روش پرداخت)"""
+    builder = InlineKeyboardBuilder()
+    
+    # دکمه ادامه خرید (تکمیل پرداخت)
+    builder.button(text="🛍 ادامه خرید", callback_data=f"checkout:proceed:{order_id}")
+    
+    # دکمه کد تخفیف دارم
+    builder.button(text="🎟 کد تخفیف دارم", callback_data=f"checkout:disc:input:{order_id}")
+    
+    # دکمه حذف کد تخفیف (فقط اگر تخفیف دارد نمایش داده شود)
+    if has_discount:
+        builder.button(text="❌ حذف کد تخفیف", callback_data=f"checkout:disc:remove:{order_id}")
+    
+    # دکمه بازگشت (به سبد خرید/انتخاب روش پرداخت)
+    builder.button(text="🔙 بازگشت", callback_data=f"checkout:back:{order_id}")
+    
+    builder.adjust(1)
+    return builder.as_markup()
 
 
-def ik_discount_apply(order_id: int) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="✅ اعمال", callback_data=f"disc:apply:{order_id}")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"disc:back:{order_id}")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def ik_discount_input_action(order_id: int) -> InlineKeyboardMarkup:
+    """کیبورد زمانی که کاربر کد را ارسال کرده و باید اعمال کند"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ اعمال کد", callback_data=f"checkout:disc:apply:{order_id}")
+    builder.button(text="🔙 بازگشت", callback_data=f"checkout:summary:{order_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+# ====== Old Discount Keyboards (Removed or Deprecated) ======
+# ik_discount_offer و ik_discount_apply حذف شدند چون با فلو جدید جایگزین شدند.
 
 
 def ik_card_receipt_prompt(order_id: int) -> InlineKeyboardMarkup:
@@ -344,8 +363,6 @@ __all__ = [
     "ik_build_actions",
     "ik_other_services_actions",
     "ik_cart_actions",
-    "ik_discount_offer",
-    "ik_discount_apply",
     "ik_card_receipt_prompt",
     "ik_receipt_review",
     "ik_wallet_confirm",
@@ -354,4 +371,6 @@ __all__ = [
     "ik_coupon_controls",
     "ik_history_menu",
     "ik_history_more",
+    "ik_checkout_summary",
+    "ik_discount_input_action",
 ]
