@@ -73,7 +73,7 @@ from ..db import (
     update_product,
     set_order_financials,
     has_sort_conflict,
-    delete_service_message,  # اضافه شده
+    delete_service_message,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -210,7 +210,7 @@ async def _telegram_file_response(file_id: str) -> StreamingResponse:
         raise
     except httpx.HTTPError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="خطا در ارتباط با تلگرام") from exc
-    except Exception as exc:  # pragma: no cover - safety net
+    except Exception as exc:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="دانلود فایل با خطا مواجه شد") from exc
 
 
@@ -234,12 +234,12 @@ def create_admin_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.on_event("startup")
-    async def _startup() -> None:  # pragma: no cover - io side effect
+    async def _startup() -> None:
         init_db()
         seed_default_catalog()
 
     @app.on_event("shutdown")
-    async def _shutdown() -> None:  # pragma: no cover - io side effect
+    async def _shutdown() -> None:
         await bot.session.close()
 
     @app.get("/", include_in_schema=False)
@@ -460,9 +460,6 @@ def create_admin_app() -> FastAPI:
             pre_price = 0
             require_username = False
             require_password = False
-            allow_first_plan = False
-            cashback_enabled = False
-            cashback_percent = 0
             allow_first_plan = False
             cashback_enabled = False
             cashback_percent = 0
@@ -946,8 +943,24 @@ def create_admin_app() -> FastAPI:
                     set_order_wallet_reserved(order_id, 0)
                     set_order_wallet_used(order_id, used_amount + reserved_amount)
 
+            # بررسی کش‌بک
+            prev_cashback = int(order.get("cashback_applied_amount") or 0)
             updated = get_order(order_id)
+            curr_cashback = int(updated.get("cashback_applied_amount") or 0) if updated else 0
+            cashback_delta = curr_cashback - prev_cashback
+
             if status_changed and updated and user_id:
+                # اگر کش‌بک اضافه شده، پیام بفرست
+                if cashback_delta > 0:
+                    product_title = updated.get("plan_title") or updated.get("service_code") or order_title
+                    await _notify_user(
+                        user_id,
+                        (
+                            f"🎁 مبلغ {_format_amount(cashback_delta)} {CURRENCY} بابت سفارش «{product_title}» به کیف پول شما اضافه شد.\n\n"
+                            "منتظر خریدهای بعدی‌تان هستیم! 🌹"
+                        )
+                    )
+
                 if plan_approval:
                     product_title = updated.get("plan_title") or updated.get("service_code") or order_title
                     await _notify_user(
